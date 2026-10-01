@@ -50,8 +50,11 @@ int tritonize(ea_t pc, thid_t threadID)
     insn_t ins;
     decode_insn(&ins, pc);
     item_size = ins.size;
-    assert(item_size < sizeof(opcodes));
-    get_bytes(&opcodes, item_size, pc, GMB_READALL, NULL);
+    if (item_size <= 0 || item_size > sizeof(opcodes)
+        || get_bytes(opcodes, item_size, pc, GMB_READALL, NULL) != item_size) {
+        msg("[!] Could not read instruction at " MEM_FORMAT "\n", pc);
+        return 2;
+    }
 
     /* Setup Triton information */
     tritonInst->clear(); // ToDo: I think this is not necesary
@@ -154,20 +157,29 @@ int tritonize(ea_t pc, thid_t threadID)
 }
 
 bool ponce_set_triton_architecture() {
-    if (ph.id == PLFM_386) {
-        if (ph.use64())
+#if IDA_SDK_VERSION >= 900
+    const auto &processor = PH;
+    const bool is64 = inf_is_64bit();
+    const bool is32 = inf_is_32bit_exactly();
+#else
+    const auto &processor = ph;
+    const bool is64 = ph.use64();
+    const bool is32 = ph.use32();
+#endif
+    if (processor.id == PLFM_386) {
+        if (is64)
             tritonCtx.setArchitecture(triton::arch::ARCH_X86_64);
-        else if (ph.use32())
+        else if (is32)
             tritonCtx.setArchitecture(triton::arch::ARCH_X86);
         else {
             msg("[e] Wrong architecture\n");
             return false;
         }
     }
-    else if (ph.id == PLFM_ARM) {
-        if (ph.use64())
+    else if (processor.id == PLFM_ARM) {
+        if (is64)
             tritonCtx.setArchitecture(triton::arch::ARCH_AARCH64);
-        else if (ph.use32())
+        else if (is32)
             tritonCtx.setArchitecture(triton::arch::ARCH_ARM32);
         else {
             msg("[e] Wrong architecture\n");
@@ -224,7 +236,7 @@ void triton_restart_engines()
     ponce_runtime_status.total_number_symbolic_ins = 0;
     ponce_runtime_status.total_number_symbolic_conditions = 0;
     ponce_runtime_status.current_trace_counter = 0;
-    breakpoint_pending_actions.clear();
+    clear_pending_blacklist_breakpoints();
     clear_requests_queue();
 
 }

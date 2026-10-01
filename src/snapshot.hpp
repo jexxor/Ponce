@@ -64,21 +64,19 @@ private:
     triton::arch::arm::aarch64::AArch64Cpu * cpu_AArch64;
     triton::arch::arm::arm32::Arm32Cpu* cpu_Arm32;
 
-#if defined(__x86_64__) || defined(_M_X64)
-    
-#endif
-#if defined(__i386) || defined(_M_IX86)
-    triton::arch::x86::x86Cpu* cpu;
-#endif
-
     //! Snapshot of Pin context.
-    std::map<std::string, triton::uint512> IDAContext;
+    std::map<std::string, uint64> IDAContext;
+
+    //! Stack pointer read directly from the suspended debugger.
+    ea_t savedSp;
 
     //! Snapshot of the ponce plugin status
     struct runtime_status_t saved_ponce_runtime_status;
 
     //! address where the snapshot was taken
     ea_t address;
+
+    void releaseSavedState();
 
 public:
     //! Constructor.
@@ -103,7 +101,7 @@ public:
     void resetEngine(void);
 
     //! Restores a snapshot.
-    void restoreSnapshot();
+    bool restoreSnapshot();
 
     //! Sets the restore flag.
     void setRestore(bool flag);
@@ -117,4 +115,3 @@ public:
     //! Setter for the address where the snaphsot was taken
     void setAddress(ea_t address);
 };
-

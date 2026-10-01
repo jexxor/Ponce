@@ -20,9 +20,26 @@ We addressed these needs by creating Ponce, an IDA plugin that implements symbol
 
 ### Installation
 
-Ponce works with both x86 and x64 binaries in any IDA version &gt;= 7.0. Installing the plugin is as simple as copying the appropiate files from the [latest builds](https://github.com/illera88/Ponce/releases/latest) to the `plugins\` folder in your IDA installation directory.
+Ponce works with both x86 and x64 binaries in any IDA version &gt;= 7.0. Installing the plugin is as simple as copying the appropiate files from the [latest builds](https://github.com/jexxor/Ponce/releases/latest) to the `plugins\` folder in your IDA installation directory.
 
 Make sure you use the Ponce binary compiled for your IDA version to avoid any incompatibilities.
+
+#### IDA 9.3 releases (Windows, Linux, macOS x86_64)
+
+Download the `Ponce-ida9.3-<version>-<platform>.zip` asset from [Releases](https://github.com/jexxor/Ponce/releases). Extract `Ponce64.dll` (Windows), `Ponce64.so` (Linux), or `Ponce64.dylib` (macOS) into your user plugin directory and restart IDA. Each archive includes `INSTALL.txt` with its platform's install path. These release builds link Triton, Capstone, and Z3 statically; only IDA 9.3 and normal OS runtime libraries are required. Hex-Rays integration is optional.
+
+Pushing a `v*` tag runs [IDA 9.3 release builds](.github/workflows/release-ida93.yml) for all three platforms and publishes the ZIPs after every build succeeds. `workflow_dispatch` builds downloadable artifacts without publishing a release.
+
+#### IDA 9.3 on Linux x86_64
+
+Build output for IDA 9.3: `build-ida93/Ponce64.so`. Copy it into your user plugin directory and restart IDA:
+
+```sh
+mkdir -p ~/.idapro/plugins
+cp build-ida93/Ponce64.so ~/.idapro/plugins/Ponce64.so
+```
+
+This locally built plugin uses IDA's `libida.so` and requires `libz3.so.4` (Debian/Ubuntu: `sudo apt install libz3-4`). Triton and Capstone are linked into this build. The release ZIPs above link Z3 statically instead. Open an x86 or x64 database, then use **Edit > Ponce**; the initial configuration prompt appears on first run. A Hex-Rays decompiler is optional: pseudocode annotations activate when one is available.
 
 ### OS Support
 
@@ -43,6 +60,8 @@ The plugin will automatically run, guiding you through the initial configuration
 * **Symbolic engine**: This engine maintains a symbolic state of registers and part of memory at each step in a binary's execution path. 
 
 ### Examples
+
+For guided hands-on exercises, build the three [Linux x86_64 training crackmes](examples/training/README.md) and follow their breakpoint and Ponce instructions.
 
 #### Negate and inject a condition
 
@@ -138,7 +157,18 @@ Ponce relies on the [Triton framework](https://github.com/JonathanSalwan/Triton)
 
 ### Building
 
-Since Ponce v0.3 we have moved the building compilation process to use `CMake`. Doing this we unify the way that configuration and building happens for Linux, Windows and OSX. We now support providing feedback on the pseudocode about symbolic or taint instructions. For this feature to work you need to add `hexrays.hpp` to your IDA SDK include folder. `hexrays.hpp` can be found on `plugins/hexrays_sdk/` on your IDA installation path. If you have not purchased the hex-rays decompiler you can still build Pnce by using `-DBUILD_HEXRAYS_SUPPORT=OFF`. We use Github actions as our CI environment. Check the [action files](https://github.com/illera88/Ponce/tree/master/.github/workflows) if you want to understand how the building process happens.
+For IDA 9.3, use the `v9.3.0-release` tag of [ida-sdk](https://github.com/HexRaysSA/ida-sdk) and a Triton build exposing `triton::triton` (with Capstone and Z3). Point `IDASDK_ROOT_DIR` at the SDK repository root (containing `src/include`) and `CMAKE_PREFIX_PATH` at your Triton installation. CMake builds only `Ponce64.so` by default for IDA 9.x; IDA 9 uses 64-bit address space even for 32-bit input binaries.
+
+```sh
+cmake -S . -B build-ida93 -DCMAKE_BUILD_TYPE=Release \
+  -DIDASDK_ROOT_DIR=/path/to/ida-sdk-9.3 \
+  -DCMAKE_PREFIX_PATH=/path/to/triton-install -DBUILD_EXAMPLES=OFF
+cmake --build build-ida93 -j 4
+```
+
+Build Triton as a position-independent static library to avoid needing a separate `libtriton.so` at runtime. If using a shared Triton build instead, install its `libtriton.so` into your system library search path before starting IDA.
+
+Since Ponce v0.3 we have moved the building compilation process to use `CMake`. Doing this we unify the way that configuration and building happens for Linux, Windows and OSX. We now support providing feedback on the pseudocode about symbolic or taint instructions. For this feature to work you need to add `hexrays.hpp` to your IDA SDK include folder. `hexrays.hpp` can be found on `plugins/hexrays_sdk/` on your IDA installation path. If you have not purchased the hex-rays decompiler you can still build Pnce by using `-DBUILD_HEXRAYS_SUPPORT=OFF`. We use Github actions as our CI environment. Check the [action files](.github/workflows) if you want to understand how the building process happens.
 
 ### FAQ
 
@@ -186,4 +216,3 @@ Concolic execution and Ponce have some problems:
 
 * Alberto Garcia Illera \([@algillera](https://twitter.com/algillera)\) agarciaillera@gmail.com
 * Francisco Oca \([@francisco\_oca](https://twitter.com/francisco_oca)\) francisco.oca.gonzalez@gmail.com
-

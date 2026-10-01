@@ -1,0 +1,171 @@
+name: Release Ponce for IDA 9.3
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+            triplet: x64-linux-release
+            vcpkg_exe: ./vcpkg/vcpkg
+            extension: so
+          - runner: windows-2022
+            platform: windows-x86_64
+            triplet: x64-windows-static-release
+            vcpkg_exe: ./vcpkg/vcpkg.exe
+            extension: dll
+          - runner: macos-15-intel
+            platform: macos-x86_64
+            triplet: x64-osx-release
+            vcpkg_exe: ./vcpkg/vcpkg
+            extension: dylib
+    runs-on: ${{ matrix.runner }}
+    env:
+      TRIPLET: ${{ matrix.triplet }}
+      VCPKG_EXE: ${{ matrix.vcpkg_exe }}
+      VCPKG_DISABLE_METRICS: 1
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/.github/triplets
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out matching IDA SDK
+        uses: actions/checkout@v4
+        with:
+          repository: HexRaysSA/ida-sdk
+          ref: v9.3.0-release
+          path: ida-sdk-9.3
+
+      - name: Check out pinned vcpkg ports
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: eb2d3a3279fd019cb7733072d86900d0ad2a1aef
+          path: vcpkg
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Bootstrap vcpkg (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Build static Triton, Capstone, and Z3
+        shell: bash
+        run: |
+          "$VCPKG_EXE" install triton --triplet "$TRIPLET" --overlay-triplets "$VCPKG_OVERLAY_TRIPLETS"
+
+      - name: Set up Python for packaging
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure and build IDA 9.3 plugin
+        shell: bash
+        env:
+          SDK_ROOT: ${{ github.workspace }}/ida-sdk-9.3
+          TOOLCHAIN: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+        run: |
+          options=()
+          if [[ "$RUNNER_OS" == 'macOS' ]]; then
+            options+=(-DCMAKE_OSX_ARCHITECTURES=x86_64)
+          fi
+          cmake -S . -B build-ida93 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DIDASDK_ROOT_DIR="$SDK_ROOT" \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+            -DVCPKG_TARGET_TRIPLET="$TRIPLET" \
+            -DVCPKG_OVERLAY_TRIPLETS="$VCPKG_OVERLAY_TRIPLETS" \
+            -DBUILD_EXAMPLES=OFF -DBUILD_HEXRAYS_SUPPORT=ON \
+            "${options[@]}"
+          cmake --build build-ida93 --target Ponce64 --parallel 2
+
+      - name: Verify Triton, Capstone, and Z3 are linked statically
+        shell: bash
+        env:
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          binary = f'build-ida93/Ponce64.{os.environ["EXTENSION"]}'
+          commands = {
+              'Linux': ['readelf', '-d', binary],
+              'macOS': ['otool', '-L', binary],
+              'Windows': ['dumpbin', '/DEPENDENTS', binary],
+          }
+          dependencies = subprocess.check_output(commands[os.environ['RUNNER_OS']], text=True)
+          print(dependencies)
+          if re.search(r'(?i)\b(?:lib)?(?:triton|capstone|z3)\.(?:so|dylib|dll)\b', dependencies):
+              raise SystemExit('Plugin still depends on a shared Triton, Capstone, or Z3 library')
+          PY
+
+      - name: Package installable plugin
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          EXTENSION: ${{ matrix.extension }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          python .github/scripts/package_release.py \
+            --binary "build-ida93/Ponce64.$EXTENSION" \
+            --platform "$PLATFORM" --version "$RELEASE_VERSION" \
+            --vcpkg-installed "vcpkg/installed/$TRIPLET"
+
+      - name: Upload platform build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ponce-ida93-${{ matrix.platform }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all platform builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ponce-ida93-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify release contains all three platforms
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          files = list(Path('dist').glob('*.zip'))
+          assert len(files) == 3, f'Expected 3 release archives, got: {files}'
+          for platform in ('linux-x86_64', 'windows-x86_64', 'macos-x86_64'):
+              assert any(platform in path.name for path in files), f'Missing {platform}: {files}'
+          PY
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

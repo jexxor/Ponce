@@ -373,6 +373,8 @@ bool ask_for_execute_native()
 
 /*This function deletes the prefixes and sufixes that IDA adds*/
 qstring clean_function_name(qstring name) {
+    if (name.empty())
+        return name;
     if (name.substr(0, 7) == "__imp__")
         return clean_function_name(name.substr(7));
     else if (name.substr(0, 4) == "imp_")
@@ -385,7 +387,7 @@ qstring clean_function_name(qstring name) {
         return clean_function_name(name.substr(1));
     else if (name.find('@', 0) != -1)
         return clean_function_name(name.substr(0, name.find('@', 0)));
-    else if (name.at(name.length() - 2) == '_' && isdigit(name.at(name.length() - 1))) //name_1
+    else if (name.length() >= 2 && name.at(name.length() - 2) == '_' && isdigit(name.at(name.length() - 1))) //name_1
         return clean_function_name(name.substr(0, name.length() - 2));
     return name;
 }

@@ -8,8 +8,6 @@
 **  This program is under the terms of the BSD License.
 */
 
-#include <thread>
-
 //IDA
 #include <idp.hpp>
 #include <dbg.hpp>
@@ -174,7 +172,7 @@ struct ah_taint_symbolize_memory_t : public action_handler_t
                 current_ea = ctx->cur_value;
         }
 #endif
-        else if (ctx->widget_type == BWN_DUMP) {
+        else if (ctx->widget_type == PONCE_DUMP_VIEW) {
             if (ctx->cur_flags & ACF_HAS_SELECTION){ // Only if there has been a valid selection
                 //We get the selection bounds from the action activation context
                 auto selection_starts = ctx->cur_sel.from.at->toea();
@@ -253,7 +251,7 @@ struct ah_taint_symbolize_memory_t : public action_handler_t
             }
             action_to_take = is_debugger_on() ? AST_ENABLE : AST_DISABLE;
         }
-        else if (action_update_ctx_t->widget_type == BWN_DUMP) {
+        else if (action_update_ctx_t->widget_type == PONCE_DUMP_VIEW) {
             action_to_take = is_debugger_on() ? AST_ENABLE : AST_DISABLE;    
         }
 #if IDA_SDK_VERSION >= 730
@@ -301,25 +299,43 @@ action_desc_t action_IDA_taint_symbolize_memory = ACTION_DESC_LITERAL(
     "Symbolize the selected register", //Optional: the action tooltip (available in menus/toolbar)
     50); //Optional: the action icon (shows when in menus/toolbars)
 
+// Resolve the current branch from Triton's state, not from mutable UI tooltip text.
+static bool current_branch_solution(ea_t ea, unsigned int *index, ea_t *destination)
+{
+    const auto *instruction = ponce_runtime_status.last_triton_instruction;
+    if (instruction == nullptr || instruction->getAddress() != ea
+        || !instruction->isBranch() || !instruction->isSymbolized())
+        return false;
+
+    const auto &constraints = tritonCtx.getPathConstraints();
+    for (size_t i = constraints.size(); i > 0; --i) {
+        for (const auto& [taken, srcAddr, dstAddr, predicate] : constraints[i - 1].getBranchConstraints()) {
+            if (srcAddr == ea && !taken) {
+                *index = static_cast<unsigned int>(i - 1);
+                *destination = dstAddr;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 struct ah_negate_and_inject_t : public action_handler_t
 {
     virtual int idaapi activate(action_activation_ctx_t* action_activation_ctx)
     {
         //This is only working from the disassembly windows
         if (action_activation_ctx->widget_type == BWN_DISASM) {
-            // We get the symbolic condition index from the tooltip
-            qstring tooltip;
-            get_action_tooltip(&tooltip, action_activation_ctx->action);
-            auto offset = tooltip.find("Index: ");
-            assert(offset != -1);
-            //We extract the symbolic condition index from the action name
-            unsigned int symbolic_condition_index = atoi((tooltip.c_str() + offset + 7)); // skip "Index: "
+            unsigned int symbolic_condition_index;
+            ea_t destination;
+            if (!current_branch_solution(action_activation_ctx->cur_ea, &symbolic_condition_index, &destination))
+                return 0;
             
             if (cmdOptions.showDebugInfo)
                 msg("[+] Negating condition at " MEM_FORMAT "\n", action_activation_ctx->cur_ea);
 
-            std::thread t(negate_inject_maybe_restore_solver, action_activation_ctx->cur_ea, symbolic_condition_index, false);
-            t.detach();            
+            // Solver writes IDA memory/registers; keep all IDA API calls on the UI thread.
+            negate_inject_maybe_restore_solver(action_activation_ctx->cur_ea, symbolic_condition_index, false);
         }
 
         // Reset tracer timing counter since user was using IDA and not just tracing
@@ -330,31 +346,13 @@ struct ah_negate_and_inject_t : public action_handler_t
     virtual action_state_t idaapi update(action_update_ctx_t* ctx)
     {
         //Only if process is being debugged
-        if (is_debugger_on()) {
-            //If we are in runtime and it is the last instruction we test if it is symbolize
-            if (ponce_runtime_status.last_triton_instruction != NULL &&
-                ponce_runtime_status.last_triton_instruction->getAddress() == ctx->cur_ea &&
-                ponce_runtime_status.last_triton_instruction->isBranch() &&
-                ponce_runtime_status.last_triton_instruction->isSymbolized()) {
-
-                unsigned int path_constraint_index = 0;
-                for (const auto& pc : tritonCtx.getPathConstraints()) {
-                    for (auto const& [taken, srcAddr, dstAddr, pc] : pc.getBranchConstraints()) {
-                        if (ctx->cur_ea == srcAddr && !taken) {
-                            char tooltip[20];
-                            //We need the path constraint index during the action activate
-                            qsnprintf(tooltip, 255, "Index: %u", path_constraint_index);
-                            update_action_tooltip(ctx->action, tooltip);
-
-                            char label[50] = { 0 };
-                            qsnprintf(label, sizeof(label), "Negate and Inject to reach " MEM_FORMAT, dstAddr);
-                            update_action_label(ctx->action, label);
-                            return AST_ENABLE;
-                        }
-                    }
-                    path_constraint_index++;
-                }
-            }
+        unsigned int index;
+        ea_t destination;
+        if (is_debugger_on() && current_branch_solution(ctx->cur_ea, &index, &destination)) {
+            char label[100];
+            qsnprintf(label, sizeof(label), "Negate and Inject to reach " MEM_FORMAT, destination);
+            update_action_label(ctx->action, label);
+            return AST_ENABLE;
         }
         // Using the default value
         update_action_label(ctx->action, action_IDA_negate_and_inject.label);
@@ -376,20 +374,16 @@ struct ah_negate_inject_and_restore_t : public action_handler_t
     virtual int idaapi activate(action_activation_ctx_t* action_activation_ctx)
     {
         //This is only working from the disassembly windows
-        if (action_activation_ctx->widget_type == BWN_DISASM) {
-            // We get the symbolic condition index from the tooltip
-            qstring tooltip;
-            get_action_tooltip(&tooltip, action_activation_ctx->action);
-            auto offset = tooltip.find("Index: ");
-            assert(offset != -1);
-            //We extract the symbolic condition index from the action name
-            unsigned int symbolic_condition_index = atoi((tooltip.c_str() + offset + 7)); // skip "Index: "
+        if (action_activation_ctx->widget_type == BWN_DISASM && snapshot.exists()) {
+            unsigned int symbolic_condition_index;
+            ea_t destination;
+            if (!current_branch_solution(action_activation_ctx->cur_ea, &symbolic_condition_index, &destination))
+                return 0;
 
             if (cmdOptions.showDebugInfo)
                 msg("[+] Negating condition at " MEM_FORMAT "\n", action_activation_ctx->cur_ea);
 
-            std::thread t(negate_inject_maybe_restore_solver, action_activation_ctx->cur_ea, symbolic_condition_index, true);
-            t.detach();
+            negate_inject_maybe_restore_solver(action_activation_ctx->cur_ea, symbolic_condition_index, true);
         }
         // Reset tracer timing counter since user was using IDA and not just tracing
         ponce_runtime_status.tracing_start_time = GetTimeMs64();
@@ -399,25 +393,14 @@ struct ah_negate_inject_and_restore_t : public action_handler_t
     virtual action_state_t idaapi update(action_update_ctx_t* ctx)
     {
         //Only if process is being debugged
-        if (is_debugger_on() && snapshot.exists()) {
-            //If we are in runtime and it is the last instruction we test if it is symbolize
-            if (ponce_runtime_status.last_triton_instruction != NULL &&
-                ponce_runtime_status.last_triton_instruction->getAddress() == ctx->cur_ea &&
-                ponce_runtime_status.last_triton_instruction->isBranch() &&
-                ponce_runtime_status.last_triton_instruction->isSymbolized()) {
-
-
-                for (const auto& pc : tritonCtx.getPathConstraints()) {
-                    for (auto const& [taken, srcAddr, dstAddr, pc] : pc.getBranchConstraints()) {
-                        if (ctx->cur_ea == srcAddr) {
-                            char label[100] = { 0 };
-                            qsnprintf(label, sizeof(label), "Negate, Inject to reach " MEM_FORMAT " & Restore snapshot", dstAddr);
-                            update_action_label(ctx->action, label);
-                            return AST_ENABLE;
-                        }
-                    }
-                }
-            }
+        unsigned int index;
+        ea_t destination;
+        if (is_debugger_on() && snapshot.exists()
+            && current_branch_solution(ctx->cur_ea, &index, &destination)) {
+            char label[100];
+            qsnprintf(label, sizeof(label), "Negate, Inject to reach " MEM_FORMAT " & Restore snapshot", destination);
+            update_action_label(ctx->action, label);
+            return AST_ENABLE;
         }
         // Using the default value
         update_action_label(ctx->action, action_IDA_negate_inject_and_restore.label);
@@ -444,10 +427,11 @@ struct ah_create_snapshot_t : public action_handler_t
             return 0;
         }
 
+        snapshot.takeSnapshot();
+        if (!snapshot.exists())
+            return 0;
         ponce_set_cmt(xip, "Snapshot taken here", false, true, false);
         ponce_set_item_color(xip, 0x00FFFF);
-
-        snapshot.takeSnapshot();
         snapshot.setAddress(xip); // We will use this address later to delete the comment
         msg("Snapshot Taken\n");
 
@@ -479,8 +463,8 @@ struct ah_restore_snapshot_t : public action_handler_t
 {
     virtual int idaapi activate(action_activation_ctx_t* ctx)
     {
-        snapshot.restoreSnapshot();
-        msg("Snapshot restored\n");
+        if (snapshot.restoreSnapshot())
+            msg("Snapshot restored\n");
 
         // Reset tracer timing counter since user was using IDA and not just tracing
         ponce_runtime_status.tracing_start_time = GetTimeMs64();
@@ -876,8 +860,7 @@ struct ah_solve_formula_sub_t : public action_handler_t
         if (cmdOptions.showDebugInfo)
             msg("[+] Solving condition at address " MEM_FORMAT " with symbolic condition index %d\n", ctx->cur_ea, path_constraint_index);
         
-        std::thread t(solve_formula, ctx->cur_ea, path_constraint_index);
-        t.detach();
+        solve_formula(ctx->cur_ea, path_constraint_index);
         
         // Reset tracer timing counter since user was using IDA and not just tracing
         ponce_runtime_status.tracing_start_time = GetTimeMs64();
@@ -920,8 +903,7 @@ struct ah_solve_formula_choose_index_sub_t : public action_handler_t
             if (cmdOptions.showDebugInfo)
                 msg("[+] Solving condition at address " MEM_FORMAT " with symbolic condition index %d\n", ctx->cur_ea, path_constraint_index);
             
-            std::thread t(solve_formula, ctx->cur_ea, path_constraint_index);
-            t.detach();
+            solve_formula(ctx->cur_ea, path_constraint_index);
         }
 
         // Reset tracer timing counter since user was using IDA and not just tracing

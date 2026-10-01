@@ -32,27 +32,22 @@ triton::uint512 IDA_getCurrentMemoryValue(ea_t addr, triton::uint32 size)
 {
     if (size > triton::size::max_supported) {
         warning("[!] getCurrentMemoryValue() error, size can't be larger than %u bytes (%u)\n", triton::size::max_supported, triton::size::max_supported * 8);
-        return -1;
+        return 0;
     }
     triton::uint8 buffer[64] = { 0 };
     //This is the way to force IDA to read the value from the debugger
     //More info here: https://www.hex-rays.com/products/ida/support/sdkdoc/dbg_8hpp.html#ac67a564945a2c1721691aa2f657a908c
     invalidate_dbgmem_contents(addr, size);
-    get_bytes(&buffer, size, addr, GMB_READALL, NULL);
-
-    triton::uint512 value = 0;
-    switch (size) {
-    case triton::size::byte:    value = *(reinterpret_cast<triton::uint8*>(buffer));  break;
-    case triton::size::word:    value = *(reinterpret_cast<triton::uint16*>(buffer)); break;
-    case triton::size::dword:   value = *(reinterpret_cast<triton::uint32*>(buffer)); break;
-    case triton::size::qword:   value = *(reinterpret_cast<triton::uint64*>(buffer)); break;
-    case triton::size::dqword:  value = triton::utils::cast<triton::uint128>(reinterpret_cast<triton::uint8*>(buffer)); break;
-    case triton::size::qqword:  value = triton::utils::cast<triton::uint256>(reinterpret_cast<triton::uint8*>(buffer)); break;
-    case triton::size::dqqword: value = triton::utils::cast<triton::uint512>(reinterpret_cast<triton::uint8*>(buffer)); break;
+    if (get_bytes(buffer, size, addr, GMB_READALL, NULL) != size) {
+        msg("[!] Could not read debugger memory at " MEM_FORMAT "\n", addr);
+        return 0;
     }
 
+    triton::uint512 value = 0;
+    for (triton::uint32 i = size; i > 0; --i)
+        value = (value << 8) | buffer[i - 1];
+
     return value;
-    return triton::utils::cast<triton::uint512>(buffer);
 }
 
 /*This callback is called when triton is processing a instruction and it needs a memory value to build the expressions*/
@@ -91,24 +86,28 @@ void needConcreteMemoryValue_cb(triton::Context& tritonCtx, const triton::arch::
 /* Get a reg value from IDA debugger*/
 triton::uint512 IDA_getCurrentRegisterValue(const triton::arch::Register& reg)
 {
-    regval_t reg_value;
-    triton::uint512 value = 0;
     auto reg_name = reg.getName();
     assert(!reg_name.empty());
+    // IDA's integer register API cannot return SIMD values. Retain Triton's
+    // last known value rather than treating non-integer data as an address.
+    if (reg.getSize() > sizeof(uint64))
+        return tritonCtx.getConcreteRegisterValue(reg, false);
     //We need to invalidate the registers. If not IDA uses the last value when program was stopped
     invalidate_dbg_state(DBGINV_REGS);
-    get_reg_val(reg_name.c_str(), &reg_value);
-    value = reg_value.ival;
-    /* Sync with the libTriton */
-    triton::arch::Register syncReg;
-    if (reg.getId() >= tritonCtx.registers.x86_af.getId() && reg.getId() <= tritonCtx.registers.x86_zf.getId())
-        syncReg = tritonCtx.registers.x86_eflags;
-    else if (reg.getId() >= tritonCtx.registers.x86_sse_ie.getId() && reg.getId() <= tritonCtx.registers.x86_sse_fz.getId())
-        syncReg = tritonCtx.registers.x86_mxcsr;
-    else
-        syncReg = tritonCtx.getRegister(reg.getParent());
-
+    uint64 value = 0;
+    if (!get_reg_val(reg_name.c_str(), &value)) {
+        if (cmdOptions.showDebugInfo)
+            msg("[!] Could not read debugger register %s\n", reg_name.c_str());
+        return tritonCtx.getConcreteRegisterValue(reg, false);
+    }
     return value;
+}
+
+bool IDA_setCurrentRegisterValue(const char *name, uint64 value)
+{
+    regval_t reg_value;
+    reg_value.set_int(value);
+    return set_reg_val(name, &reg_value);
 }
 
 /*This callback is called when triton is processing a instruction and it needs a regiter to build the expressions*/
@@ -137,7 +136,4 @@ void needConcreteRegisterValue_cb(triton::Context& tritonCtx, const triton::arch
             std::isprint(static_cast<unsigned char>(IDA_regValue)) ? ascii_value : "");
     }
 }
-
-
-
 

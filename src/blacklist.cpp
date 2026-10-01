@@ -27,6 +27,15 @@
 
 std::list<breakpoint_pending_action> breakpoint_pending_actions;
 
+void clear_pending_blacklist_breakpoints()
+{
+    for (const auto& action : breakpoint_pending_actions) {
+        if (!action.ignore_breakpoint)
+            del_bpt(action.address);
+    }
+    breakpoint_pending_actions.clear();
+}
+
 std::vector<std::string> builtin_black_functions = {
     "printf",
     "puts",
@@ -115,17 +124,27 @@ std::vector<std::string> builtin_black_functions = {
 //Helper to concretize and untaint volatile registers
 void concretizeAndUntaintVolatileRegisters()
 {
-    //ToDo: check how different compilers behave regarding volatile registers
-#if defined(__i386) || defined(_M_IX86)
-    char const* volatile_regs[] = { "eax", "ecx", "edx" };
-#elif defined(__x86_64__) || defined(_M_X64)
-    char const* volatile_regs[] = { "rax", "rcx", "rdx", "r8", "r8", "r10", "r11", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15" };
+    std::vector<const char*> volatile_regs;
+    if (tritonCtx.getArchitecture() == triton::arch::ARCH_X86) {
+        volatile_regs = { "eax", "ecx", "edx", "eflags" };
+    }
+    else if (tritonCtx.getArchitecture() == triton::arch::ARCH_X86_64) {
+#if defined(__NT__)
+        // Windows x64 preserves RDI, RSI and XMM6-XMM15.
+        volatile_regs = { "rax", "rcx", "rdx", "r8", "r9", "r10", "r11", "eflags",
+                          "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5" };
+#else
+        // System V x86-64 uses RDI/RSI for arguments; all XMM registers are caller-saved.
+        volatile_regs = { "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "eflags",
+                          "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7",
+                          "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15" };
 #endif
+    }
 
     for (const auto& [reg_id, reg] : tritonCtx.getAllRegisters())
     {
-        for (auto i = 0; i < sizeof(volatile_regs) / sizeof(char*); i++) {
-            if (strcmp(reg.getName().c_str(), volatile_regs[i]) == 0) {
+        for (const char *name : volatile_regs) {
+            if (reg.getName() == name) {
                 tritonCtx.concretizeRegister(reg);
                 tritonCtx.untaintRegister(reg);
             }
@@ -156,6 +175,10 @@ void enableTrigger_and_concretize_registers(ea_t main_address)
 
 void readBlacklistfile(char* path) {
     std::ifstream file(path);
+    if (!file) {
+        msg("[!] Cannot open blacklist file %s; using built-in list\n", path);
+        return;
+    }
     std::string str;
     blacklkistedUserFunctions = new std::vector<std::string>();
     while (std::getline(file, str)) {
@@ -173,9 +196,7 @@ bool should_blacklist(ea_t pc, thid_t tid) {
     // We do this to blacklist API that does not change the tainted input
     if (cmd.itype == NN_call || cmd.itype == NN_callfi || cmd.itype == NN_callni)
     {
-        //qstring callee = get_callee_name(pc);
-        qstring callee;
-        auto callee_lenght = get_func_name(&callee, pc);
+        qstring callee = get_callee_name(pc);
         std::vector<std::string>* to_use_blacklist;
 
         //Let's check if the user provided any blacklist file or we sholuld use the built in one
@@ -193,13 +214,17 @@ bool should_blacklist(ea_t pc, thid_t tid) {
                 /*We should set a BP in the next instruction right after the
                 blacklisted callback to enable tracing again*/
                 ea_t next_ea = next_head(pc, BADADDR);
-                add_bpt(next_ea, 1, BPT_EXEC);
-                //We set a comment so the user know why there is a new bp there
-                ponce_set_cmt(next_ea, "Temporal bp set by ponce for blacklisting\n", false);
+                if (next_ea == BADADDR)
+                    return false;
+                const bool user_breakpoint = exist_bpt(next_ea);
+                if (!user_breakpoint && !add_bpt(next_ea, 1, BPT_EXEC))
+                    return false;
+                if (!user_breakpoint)
+                    ponce_set_cmt(next_ea, "Temporal bp set by ponce for blacklisting\n", false);
 
                 breakpoint_pending_action bpa;
                 bpa.address = next_ea;
-                bpa.ignore_breakpoint = false;
+                bpa.ignore_breakpoint = user_breakpoint;
                 bpa.callback = enableTrigger_and_concretize_registers; // We will enable back the trigger when this bp get's reached
 
                 //We add the action to the list

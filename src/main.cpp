@@ -148,7 +148,7 @@ int idaapi init(void)
         error("Can't detect the IDA version you are running");
     }
 
-    if (int(runtimeVersion[0]) < 7) {
+    if (runtimeVersion[0] < '7') {
         warning("[!] Ponce plugin can't run with IDA version < 7. Please use a newer IDA version");
         return PLUGIN_SKIP;
     }
@@ -214,4 +214,3 @@ plugin_t PLUGIN =
     "Ponce", // the preferred short name of the plugin
     "" // the preferred hotkey to run the plugin
 };
-

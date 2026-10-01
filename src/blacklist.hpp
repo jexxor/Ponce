@@ -31,3 +31,4 @@ extern std::list<breakpoint_pending_action> breakpoint_pending_actions;
 
 
 bool should_blacklist(ea_t pc, thid_t tid = 0);
+void clear_pending_blacklist_breakpoints();

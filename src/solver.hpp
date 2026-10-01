@@ -12,8 +12,8 @@ public:
     int path_constraint_index;
 
     // Memory or register operands involved on the Input
-    std::vector <triton::arch::MemoryAccess> memOperand;
-    std::vector <triton::arch::Register> regOperand;
+    std::vector<std::pair<triton::arch::MemoryAccess, triton::uint512>> memOperand;
+    std::vector<std::pair<triton::arch::Register, triton::uint512>> regOperand;
 
     triton::uint64 srcAddr, dstAddr;
 

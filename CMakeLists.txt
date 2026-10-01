@@ -36,40 +36,52 @@ add_library(${PROJECT_NAME}64 SHARED ${PONCE_SOURCE_FILES} ${PONCE_HEADER_FILES}
 #                       # 
 
 # Look for IDA SDK 
-set(IDASDK_ROOT_DIR "" CACHE PATH "Path to directory idasdk7X where you extracted idasdk7X.zip")
+set(IDASDK_ROOT_DIR "" CACHE PATH "Path to IDA SDK root (containing include/, or src/include/)")
 
 if(NOT IDASDK_ROOT_DIR)
 	message(FATAL_ERROR "You should set IDASDK_ROOT_DIR to the IDA SDK path")
 endif()
 
+if(EXISTS "${IDASDK_ROOT_DIR}/src/include/ida.hpp")
+	set(IDASDK_ROOT_DIR "${IDASDK_ROOT_DIR}/src")
+endif()
 set(IDA_INCLUDE_DIR ${IDASDK_ROOT_DIR}/include)
+file(STRINGS "${IDA_INCLUDE_DIR}/pro.h" sdk_version_line REGEX "^#define IDA_SDK_VERSION[ \t]+[0-9]+")
+string(REGEX MATCH "[0-9]+$" sdk_version "${sdk_version_line}")
+if(sdk_version GREATER_EQUAL 900)
+	# IDA 9 uses a single 64-bit-address-space plugin binary.
+	set_target_properties(${PROJECT_NAME} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()
 
 # IDA SDK libs.
 if(WIN32)
 	set(idasdk_ea32 "${IDASDK_ROOT_DIR}/lib/x64_win_vc_32/ida.lib")
 	set(idasdk_ea64 "${IDASDK_ROOT_DIR}/lib/x64_win_vc_64/ida.lib")
 elseif(APPLE)
-	set(idasdk_ea32 "${IDASDK_ROOT_DIR}/lib/x64_mac_gcc_32/libida.dylib")
-	set(idasdk_ea64 "${IDASDK_ROOT_DIR}/lib/x64_mac_gcc_64/libida64.dylib")
+	if(EXISTS "${IDASDK_ROOT_DIR}/lib/x64_mac_clang_64/libida.dylib")
+		set(idasdk_ea32 "${IDASDK_ROOT_DIR}/lib/x64_mac_clang_32/libida.dylib")
+		set(idasdk_ea64 "${IDASDK_ROOT_DIR}/lib/x64_mac_clang_64/libida.dylib")
+	elseif(USE_CLANG)
+		set(idasdk_ea32 "${IDASDK_ROOT_DIR}/lib/x64_mac_clang_32/libida.dylib")
+		set(idasdk_ea64 "${IDASDK_ROOT_DIR}/lib/x64_mac_clang_64/libida64.dylib")
+	else()
+		set(idasdk_ea32 "${IDASDK_ROOT_DIR}/lib/x64_mac_gcc_32/libida.dylib")
+		set(idasdk_ea64 "${IDASDK_ROOT_DIR}/lib/x64_mac_gcc_64/libida64.dylib")
+	endif()
 elseif(UNIX) # APPLE is also UNIX, so it MUST be before this elseif().
 	set(idasdk_ea32 "${IDASDK_ROOT_DIR}/lib/x64_linux_gcc_32/libida.so")
-	set(idasdk_ea64 "${IDASDK_ROOT_DIR}/lib/x64_linux_gcc_64/libida64.so")
+	if(EXISTS "${IDASDK_ROOT_DIR}/lib/x64_linux_gcc_64/libida.so")
+		set(idasdk_ea64 "${IDASDK_ROOT_DIR}/lib/x64_linux_gcc_64/libida.so")
+	else()
+		set(idasdk_ea64 "${IDASDK_ROOT_DIR}/lib/x64_linux_gcc_64/libida64.so")
+	endif()
 	set(CMAKE_POSITION_INDEPENDENT_CODE OFF)
 else()
 	message(FATAL_ERROR "Unsupported system type: ${CMAKE_SYSTEM_NAME}")
 endif()
 
-if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-	if (USE_CLANG)
-		# IDA libs are built with clang from IDA 7.3
-		SET(CMAKE_C_COMPILER /usr/bin/clang)
-		SET(CMAKE_CXX_COMPILER /usr/bin/clang++)
-		set(idasdk_ea32 "${IDASDK_ROOT_DIR}/lib/x64_mac_clang_32/libida.dylib")
-		set(idasdk_ea64 "${IDASDK_ROOT_DIR}/lib/x64_mac_clang_64/libida64.dylib")
-	else()
-		SET(CMAKE_C_COMPILER /usr/bin/gcc)
-		SET(CMAKE_CXX_COMPILER /usr/bin/g++)
-	endif()
+if(sdk_version GREATER_EQUAL 900 AND NOT EXISTS "${idasdk_ea64}")
+	message(FATAL_ERROR "Missing IDA SDK ${sdk_version} library: ${idasdk_ea64}")
 endif()
 
 # Find Triton
@@ -114,6 +126,10 @@ get_filename_component(a_dir ${IDASDK_ROOT_DIR} DIRECTORY)
 # Now we create the projects (one for x86 and other for x64)
 target_include_directories(${PROJECT_NAME} PRIVATE ${IDA_INCLUDE_DIR})
 target_include_directories(${PROJECT_NAME}64 PRIVATE ${IDA_INCLUDE_DIR})
+if(UNIX)
+	# IDA supplies libida.so at runtime; never embed the build SDK's path.
+	set_target_properties(${PROJECT_NAME} ${PROJECT_NAME}64 PROPERTIES SKIP_BUILD_RPATH TRUE)
+endif()
 
 target_link_libraries(
     ${PROJECT_NAME}
@@ -141,8 +157,8 @@ if(WIN32)
 	set_property(TARGET ${PROJECT_NAME} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
 	set_property(TARGET ${PROJECT_NAME}64 PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
 elseif (APPLE)
-	set_target_properties(${PROJECT_NAME} PROPERTIES LINK_FLAGS_RELEASE -dead_strip)
-	set_target_properties(${PROJECT_NAME}64 PROPERTIES LINK_FLAGS_RELEASE -dead_strip)
+	set_target_properties(${PROJECT_NAME} PROPERTIES LINK_FLAGS_RELEASE "-Wl,-dead_strip")
+	set_target_properties(${PROJECT_NAME}64 PROPERTIES LINK_FLAGS_RELEASE "-Wl,-dead_strip")
 	target_compile_definitions(${PROJECT_NAME} PRIVATE __MAC__ USE_DANGEROUS_FUNCTIONS USE_STANDARD_FILE_FUNCTIONS)
 	target_compile_definitions(${PROJECT_NAME}64 PRIVATE __MAC__ USE_DANGEROUS_FUNCTIONS USE_STANDARD_FILE_FUNCTIONS)
 	# Prevent creating ponce binaries as libPonce.so but do Ponce.so

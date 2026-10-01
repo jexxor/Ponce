@@ -1,6 +1,7 @@
 
 #include "solver.hpp"
 #include "globals.hpp"
+#include "context.hpp"
 
 #include <dbg.hpp>
 
@@ -11,13 +12,17 @@ std::vector<Input> solve_formula(ea_t pc, size_t path_constraint_index)
     auto pathConstrains = tritonCtx.getPathConstraints();
     std::vector<Input> solutions;
     
-    if (path_constraint_index > pathConstrains.size() - 1) {
+    if (pathConstrains.empty() || path_constraint_index >= pathConstrains.size()) {
         msg("Error. Requested path constraint index %u is larger than PathConstraints vector size (%lu)\n", path_constraint_index, pathConstrains.size());
         return solutions;
     }
 
     // Double check that the condition at the path constraint index is at the address the user selected
-    assert(std::get<1>(pathConstrains[path_constraint_index].getBranchConstraints()[0]) == pc);
+    if (pathConstrains[path_constraint_index].getBranchConstraints().empty()
+        || std::get<1>(pathConstrains[path_constraint_index].getBranchConstraints()[0]) != pc) {
+        msg("[!] No branch constraint at selected address " MEM_FORMAT "\n", pc);
+        return solutions;
+    }
 
     auto ast = tritonCtx.getAstContext();
     // We are going to store here the constraints for the previous conditions
@@ -87,13 +92,11 @@ std::vector<Input> solve_formula(ea_t pc, size_t path_constraint_index)
                     triton::uint512 model_value = model.getValue();
                     if (symbVar->getType() == triton::engines::symbolic::variable_e::MEMORY_VARIABLE) {
                         auto mem = triton::arch::MemoryAccess(symbVar->getOrigin(), symbVar->getSize() / 8);
-                        newinput.memOperand.push_back(mem);
-                        tritonCtx.setConcreteMemoryValue(mem, model_value);
+                        newinput.memOperand.emplace_back(mem, model_value);
                     }
                     else if (symbVar->getType() == triton::engines::symbolic::variable_e::REGISTER_VARIABLE) {
                         auto reg = triton::arch::Register(*tritonCtx.getCpuInstance(), (triton::arch::register_e)symbVar->getOrigin());
-                        newinput.regOperand.push_back(reg);
-                        tritonCtx.setConcreteRegisterValue(reg, model_value);
+                        newinput.regOperand.emplace_back(reg, model_value);
                     }
                     switch (symbVar->getSize())
                     {
@@ -354,9 +357,11 @@ void negate_flag_condition(triton::arch::Instruction* triton_instruction)
 /*We set the memory to the results we got and do the analysis from there*/
 void set_SMT_solution(const Input& solution) {
     /*To set the memory types*/
-    for (const auto& mem : solution.memOperand){
-        auto concreteValue = tritonCtx.getConcreteMemoryValue(mem, false);
-        put_bytes((ea_t)mem.getAddress(), &concreteValue, mem.getSize());
+    for (const auto& [mem, concreteValue] : solution.memOperand){
+        if (write_dbg_memory((ea_t)mem.getAddress(), &concreteValue, mem.getSize()) != mem.getSize()) {
+            msg("[!] Could not inject solution at " MEM_FORMAT "\n", (ea_t)mem.getAddress());
+            continue;
+        }
         tritonCtx.setConcreteMemoryValue(mem, concreteValue);
 
         if (cmdOptions.showExtraDebugInfo){
@@ -373,9 +378,11 @@ void set_SMT_solution(const Input& solution) {
     }
 
     /*To set the register types*/
-    for (const auto& reg : solution.regOperand) {
-        auto concreteRegValue = tritonCtx.getConcreteRegisterValue(reg, false);
-        set_reg_val(reg.getName().c_str(), static_cast<uint64>(concreteRegValue));
+    for (const auto& [reg, concreteRegValue] : solution.regOperand) {
+        if (!IDA_setCurrentRegisterValue(reg.getName().c_str(), static_cast<uint64>(concreteRegValue))) {
+            msg("[!] Could not inject solution into register %s\n", reg.getName().c_str());
+            continue;
+        }
         tritonCtx.setConcreteRegisterValue(reg, concreteRegValue);
 
         if (cmdOptions.showExtraDebugInfo) {
@@ -418,22 +425,14 @@ void negate_inject_maybe_restore_solver(ea_t pc, int path_constraint_index, bool
             tritonCtx.pushPathConstraint(new_constraint);
         }
         else {
-            // ToDo: what do we do if we are in a switch case and get several solutions? Just using the first one? Ask the user?
-            for (const auto& solution : solutions) {
-                // ask the user where he wants to go in popup or even better in the contextual menu
-                // chosen_solution = &solutions[0];
-                //We need to modify the last path constrain from tritonCtx.getPathConstraints()
-                for (auto& [taken, srcAddr, dstAddr, constraint] : tritonCtx.getPathConstraints().back().getBranchConstraints()) {
-                    if (!taken) {
-
-                    }
-                }
-            }
+            msg("[!] Multiple branch solutions; injection requires choosing one\n");
+            return;
         }
-        // We negate necesary flags to go over the other branch
-        negate_flag_condition(ponce_runtime_status.last_triton_instruction);
-        if (restore)
-            snapshot.restoreSnapshot();
+        // Restoring re-executes the branch, so the saved flags must be retained.
+        if (!restore)
+            negate_flag_condition(ponce_runtime_status.last_triton_instruction);
+        if (restore && !snapshot.restoreSnapshot())
+            return;
         set_SMT_solution(*chosen_solution);
     }
 }

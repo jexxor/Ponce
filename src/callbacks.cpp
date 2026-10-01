@@ -170,6 +170,11 @@ ssize_t idaapi tracer_callback(void* user_data, int notification_code, va_list v
                     ponce_set_cmt(pc, "", false);
                     breakpoint_pending_actions.erase(it);
                 }
+                else {
+                    // Keep the user's breakpoint and resume tracing when they continue.
+                    enable_step_trace(true);
+                    breakpoint_pending_actions.erase(it);
+                }
                 break;
             }
         }
@@ -198,6 +203,7 @@ ssize_t idaapi tracer_callback(void* user_data, int notification_code, va_list v
         //Removing snapshot if it exists
         if (snapshot.exists())
             snapshot.resetEngine();
+        clear_pending_blacklist_breakpoints();
         break;
     }
     }
@@ -384,7 +390,7 @@ ssize_t idaapi ui_callback(void* ud, int notification_code, va_list va)
                     }
 
                     // Option to select an arbitrary hit
-                    attach_action_solve(NULL, 0, form, popup_handle, 2);
+                    attach_action_solve(0, 0, form, popup_handle, 2);
 
                     path_constraint_index = non_taken_branches_n;
                     count = 0;
@@ -416,13 +422,6 @@ ssize_t idaapi ui_callback(void* ud, int notification_code, va_list va)
 
         break;
     }
-    case dbg_process_exit:
-    {
-        unhook_from_notification_point(HT_DBG, ui_callback, NULL);
-        break;
-    }
     }
     return 0;
 }
-
-
