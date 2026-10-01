@@ -3,9 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/illera88/Ponce/actions?query=workflow%3A%22Build+for+Windows%22"><img alt="Build for Windows" src="https://github.com/illera88/Ponce/workflows/Build%20for%20Windows/badge.svg"></a>
-  <a href="https://github.com/illera88/Ponce/actions?query=workflow%3A%22Build+for+OSX%22"><img alt="Build for OSX" src="https://github.com/illera88/Ponce/workflows/Build%20for%20OSX/badge.svg"></a>
-  <a href="https://github.com/illera88/Ponce/actions?query=workflow%3A%22Build+for+Linux%22"><img alt="Build for Linux" src="https://github.com/illera88/Ponce/workflows/Build%20for%20Linux/badge.svg"></a>
+  <a href="https://github.com/jexxor/Ponce/actions/workflows/release-ida93.yml"><img alt="IDA 9.3 builds" src="https://github.com/jexxor/Ponce/actions/workflows/release-ida93.yml/badge.svg"></a>
 </p>
 
 # Ponce
@@ -28,7 +26,7 @@ Make sure you use the Ponce binary compiled for your IDA version to avoid any in
 
 Download the `Ponce-ida9.3-<version>-<platform>.zip` asset from [Releases](https://github.com/jexxor/Ponce/releases). Extract `Ponce64.dll` (Windows), `Ponce64.so` (Linux), or `Ponce64.dylib` (macOS) into your user plugin directory and restart IDA. Each archive includes `INSTALL.txt` with its platform's install path. These release builds link Triton, Capstone, and Z3 statically; only IDA 9.3 and normal OS runtime libraries are required. Hex-Rays integration is optional.
 
-Pushing a `v*` tag runs [IDA 9.3 release builds](.github/workflows/release-ida93.yml) for all three platforms and publishes the ZIPs after every build succeeds. `workflow_dispatch` builds downloadable artifacts without publishing a release.
+Every branch push or pull request runs [IDA 9.3 builds](.github/workflows/release-ida93.yml) for all three platforms. Pushing a `v*` tag also publishes release ZIPs after every build succeeds. `workflow_dispatch` builds downloadable artifacts without publishing a release.
 
 #### IDA 9.3 on Linux x86_64
 

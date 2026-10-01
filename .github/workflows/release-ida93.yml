@@ -1,10 +1,13 @@
-name: Release Ponce for IDA 9.3
+name: Build and release Ponce for IDA 9.3
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - '**'
     tags:
       - 'v*'
+  pull_request:
 
 jobs:
   build:
@@ -122,13 +125,11 @@ jobs:
       - name: Package installable plugin
         shell: bash
         env:
-          PLATFORM: ${{ matrix.platform }}
-          EXTENSION: ${{ matrix.extension }}
           RELEASE_VERSION: ${{ github.ref_name }}
         run: |
           python .github/scripts/package_release.py \
-            --binary "build-ida93/Ponce64.$EXTENSION" \
-            --platform "$PLATFORM" --version "$RELEASE_VERSION" \
+            --binary "build-ida93/Ponce64.${{ matrix.extension }}" \
+            --platform "${{ matrix.platform }}" --version "$RELEASE_VERSION" \
             --vcpkg-installed "vcpkg/installed/$TRIPLET"
 
       - name: Upload platform build
